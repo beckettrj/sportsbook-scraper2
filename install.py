@@ -51,14 +51,45 @@ def upgrade_pip():
 def install_requirements():
     """Install required packages."""
     print("📦 Installing required packages...")
+    
+    # First, try to install from requirements.txt
     try:
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], 
-                      check=True)
-        print("✅ All packages installed successfully")
+                      check=True, capture_output=True, text=True)
+        print("✅ All packages installed successfully from requirements.txt")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"❌ Error installing packages: {e}")
-        return False
+        print(f"⚠️  Could not install from requirements.txt: {e}")
+        print("🔄 Trying to install packages individually...")
+        
+        # Fallback: install packages individually
+        packages = [
+            "requests==2.31.0",
+            "pandas==2.2.3", 
+            "lxml==5.4.0",
+            "html5lib==1.1",
+            "beautifulsoup4==4.13.3",
+            "openpyxl==3.1.5",
+            "xlrd==2.0.2"
+        ]
+        
+        failed_packages = []
+        for package in packages:
+            try:
+                print(f"   Installing {package}...")
+                subprocess.run([sys.executable, "-m", "pip", "install", package], 
+                              check=True, capture_output=True, text=True)
+                print(f"   ✅ {package} installed")
+            except subprocess.CalledProcessError as e:
+                print(f"   ❌ Failed to install {package}: {e}")
+                failed_packages.append(package)
+        
+        if failed_packages:
+            print(f"❌ Failed to install: {', '.join(failed_packages)}")
+            return False
+        else:
+            print("✅ All packages installed successfully")
+            return True
 
 def create_data_directory():
     """Create data directory if it doesn't exist."""
@@ -75,7 +106,7 @@ def test_installation():
         import pandas
         import lxml
         import html5lib
-        import beautifulsoup4
+        import bs4  # beautifulsoup4
         import openpyxl
         import xlrd
         print("✅ All packages imported successfully")
@@ -105,6 +136,44 @@ def show_usage_examples():
     print("\n📖 For more information, see README.md")
     print("="*60)
 
+def verify_package_versions():
+    """Verify that installed packages match required versions."""
+    print("🔍 Verifying package versions...")
+    required_packages = {
+        'requests': '2.31.0',
+        'pandas': '2.2.3',
+        'lxml': '5.4.0',
+        'html5lib': '1.1',
+        'beautifulsoup4': '4.13.3',
+        'openpyxl': '3.1.5',
+        'xlrd': '2.0.2'
+    }
+    
+    try:
+        import pkg_resources
+        all_good = True
+        
+        for package, required_version in required_packages.items():
+            try:
+                installed_version = pkg_resources.get_distribution(package).version
+                if installed_version == required_version:
+                    print(f"✅ {package} {installed_version}")
+                else:
+                    print(f"⚠️  {package} {installed_version} (required: {required_version})")
+                    all_good = False
+            except pkg_resources.DistributionNotFound:
+                print(f"❌ {package} not found")
+                all_good = False
+        
+        if all_good:
+            print("✅ All package versions match requirements")
+        else:
+            print("⚠️  Some package versions don't match requirements")
+        return all_good
+    except Exception as e:
+        print(f"⚠️  Could not verify package versions: {e}")
+        return True  # Don't fail installation for this
+
 def main():
     """Main installation function."""
     print("🚀 Sportsbook Review Scraper - Installation")
@@ -124,6 +193,9 @@ def main():
     # Install requirements
     if not install_requirements():
         sys.exit(1)
+    
+    # Verify package versions
+    verify_package_versions()
     
     # Create data directory
     create_data_directory()

@@ -17,7 +17,7 @@ Key Features:
 - Standardized data schema across sports
 - Robust error handling and logging
 
-Author: Finn Lancaster
+Author: Finn Lancaster, Rod Beckett (NCAA add-on)
 License: MIT
 """
 
@@ -904,3 +904,428 @@ class NCAABasketballOddsScraper(NBAOddsScraper):
                 continue
                 
         return self._to_schema(df)
+
+
+class NCAABasketball2ndHalf:
+    """
+    NCAA Basketball 2nd Half Odds Scraper.
+    Scrapes 2nd half totals for NCAA basketball from sportsbookreview.com for a list of dates.
+
+    Note: This scraper may not work for all dates as 2nd half totals data availability
+    varies by date and the website uses dynamic JavaScript loading.
+
+    **Requires Selenium and ChromeDriver for JavaScript-rendered tables.**
+    Install with: pip install selenium
+    Download ChromeDriver: https://sites.google.com/chromium.org/driver/
+
+    Website table structure (when available):
+    - Time: Game time
+    - Rot: Rotation number
+    - Teams: Two team names with scores
+    - WAGERS %: Wagering percentage
+    - OPENER: O/U indicator, total value, and odds
+    - BetMGM, FanDuel, Caesars, bet365, DraftKings: Sportsbook odds
+
+    Output: One CSV row per team, where each game becomes two rows (one per team)
+    """
+    def __init__(self, dates_file="NCAA-2ndHalf-dates"):
+        self.sport = "ncaa2ndhalf"
+        # Try multiple URL patterns since the data availability varies
+        self.base_urls = [
+            "https://www.sportsbookreview.com/betting-odds/ncaa-basketball/totals/2nd-half/",
+            "https://www.sportsbookreviewsonline.com/scoresoddsarchives/ncaa-basketball-2nd-half/",
+        ]
+        self.dates = self._load_dates(dates_file)
+        
+        # Load team name translation mappings
+        try:
+            with open("config/translated.json", "r") as f:
+                self.translator = json.load(f)
+        except FileNotFoundError:
+            print("⚠️  Warning: config/translated.json not found. Using raw team names.")
+            self.translator = {}
+        
+        # Define the output schema for 2nd half data
+        # Each game from website becomes 2 rows (one per team)
+        self.schema = {
+            "date": [],                    # Game date
+            "time": [],                    # Game time
+            "rotation": [],                # Rotation number
+            "team": [],                    # Team name
+            "opponent": [],                # Opponent team name
+            "team_score": [],              # Team's score
+            "opponent_score": [],          # Opponent's score
+            "wagers_percent": [],          # Wagering percentage
+            "opener_ou": [],               # O/U indicator (O or U)
+            "opener_total": [],            # Opening total value
+            "opener_odds": [],             # Opening odds
+            "betmgm_total": [],            # BetMGM 2nd half total
+            "betmgm_odds": [],             # BetMGM odds
+            "fanduel_total": [],           # FanDuel 2nd half total
+            "fanduel_odds": [],            # FanDuel odds
+            "caesars_total": [],           # Caesars 2nd half total
+            "caesars_odds": [],            # Caesars odds
+            "bet365_total": [],            # bet365 2nd half total
+            "bet365_odds": [],             # bet365 odds
+            "draftkings_total": [],        # DraftKings 2nd half total
+            "draftkings_odds": [],         # DraftKings odds
+            "betrivers_total": [],         # BetRivers 2nd half total
+            "betrivers_odds": [],          # BetRivers odds
+        }
+
+    def _load_dates(self, dates_file):
+        """Load dates from file."""
+        try:
+            with open(dates_file, "r") as f:
+                return [line.strip() for line in f if line.strip()]
+        except FileNotFoundError:
+            print(f"⚠️  Warning: {dates_file} not found. No dates to process.")
+            return []
+
+    def _translate(self, name):
+        """
+        Translate team name from website format to full name.
+        
+        Args:
+            name (str): Team name as it appears on the website
+            
+        Returns:
+            str: Translated team name or original name if no translation found
+        """
+        return self.translator.get(self.sport, {}).get(name, name)
+
+    def _parse_teams_and_scores(self, teams_text):
+        """
+        Parse teams and scores from the Teams column.
+        
+        Args:
+            teams_text (str): Text containing both teams and scores
+            
+        Returns:
+            tuple: (team1_name, team1_score, team2_name, team2_score)
+        """
+        try:
+            # Handle common formats:
+            # "Duke 75 - North Carolina 70"
+            # "Duke 75 North Carolina 70"
+            # "Duke 75 @ North Carolina 70"
+            
+            # Remove any extra whitespace
+            teams_text = teams_text.strip()
+            
+            # Split by common separators
+            if " - " in teams_text:
+                parts = teams_text.split(" - ")
+            elif " @ " in teams_text:
+                parts = teams_text.split(" @ ")
+            else:
+                # Try to find where the second team starts
+                # Look for pattern: Team1 Score Team2 Score
+                words = teams_text.split()
+                if len(words) >= 4:
+                    # Try to find where the second team name starts
+                    # Usually after the first score
+                    for i in range(1, len(words) - 2):
+                        try:
+                            # Check if this position contains a score (number)
+                            score1 = int(words[i])
+                            # The next word should be the second team name
+                            if i + 2 < len(words):
+                                try:
+                                    score2 = int(words[i + 2])
+                                    # Found both scores, reconstruct parts
+                                    team1_part = " ".join(words[:i+1])
+                                    team2_part = " ".join(words[i+1:])
+                                    parts = [team1_part, team2_part]
+                                    break
+                                except ValueError:
+                                    continue
+                        except ValueError:
+                            continue
+                    else:
+                        # Fallback: split in the middle
+                        words = teams_text.split()
+                        mid = len(words) // 2
+                        parts = [" ".join(words[:mid]), " ".join(words[mid:])]
+                else:
+                    return "Team1", 0, "Team2", 0
+            
+            if len(parts) != 2:
+                return "Team1", 0, "Team2", 0
+            
+            # Parse first team and score
+            team1_parts = parts[0].strip().split()
+            if len(team1_parts) >= 2:
+                try:
+                    team1_score = int(team1_parts[-1])
+                    team1_name = " ".join(team1_parts[:-1])
+                except ValueError:
+                    team1_name = parts[0].strip()
+                    team1_score = 0
+            else:
+                team1_name = parts[0].strip()
+                team1_score = 0
+            
+            # Parse second team and score
+            team2_parts = parts[1].strip().split()
+            if len(team2_parts) >= 2:
+                try:
+                    team2_score = int(team2_parts[-1])
+                    team2_name = " ".join(team2_parts[:-1])
+                except ValueError:
+                    team2_name = parts[1].strip()
+                    team2_score = 0
+            else:
+                team2_name = parts[1].strip()
+                team2_score = 0
+            
+            return team1_name, team1_score, team2_name, team2_score
+            
+        except Exception as e:
+            print(f"Error parsing teams and scores from '{teams_text}': {e}")
+            return "Team1", 0, "Team2", 0
+
+    def _parse_opener(self, opener_text):
+        """
+        Parse OPENER column which contains O/U indicator, total value, and odds.
+        
+        Args:
+            opener_text (str): Text from OPENER column
+            
+        Returns:
+            tuple: (ou_indicator, total_value, odds)
+        """
+        try:
+            # Parse format like "O 75.5 -110" or "U 75.5 +110"
+            parts = opener_text.split()
+            if len(parts) >= 3:
+                ou_indicator = parts[0]  # O or U
+                total_value = float(parts[1])  # 75.5
+                odds = parts[2]  # -110 or +110
+                return ou_indicator, total_value, odds
+            else:
+                return "", 0, ""
+        except:
+            return "", 0, ""
+
+    def _parse_sportsbook_odds(self, odds_text):
+        """
+        Parse sportsbook odds column which may contain total and odds.
+        
+        Args:
+            odds_text (str): Text from sportsbook column
+            
+        Returns:
+            tuple: (total_value, odds)
+        """
+        try:
+            # Parse format like "75.5 -110" or just odds like "-110"
+            parts = odds_text.split()
+            if len(parts) >= 2:
+                total_value = float(parts[0])
+                odds = parts[1]
+                return total_value, odds
+            elif len(parts) == 1:
+                # Only odds, no total
+                return 0, parts[0]
+            else:
+                return 0, ""
+        except:
+            return 0, ""
+
+    def _get_rendered_html(self, url, wait_time=5):
+        """
+        Use Selenium to load the page and return the fully rendered HTML.
+        Args:
+            url (str): The URL to load
+            wait_time (int): Seconds to wait for JS to load
+        Returns:
+            str: Rendered HTML source
+        """
+        # Import Selenium only here
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        import time
+
+        options = Options()
+        options.headless = True
+        options.add_argument("--disable-gpu")
+        options.add_argument("--no-sandbox")
+        service = Service(r"C:\\Drivers\\chromedriver-win64\\chromedriver.exe")
+        driver = webdriver.Chrome(service=service, options=options)
+        try:
+            driver.get(url)
+            time.sleep(wait_time)  # Wait for JS to load table
+            html = driver.page_source
+        finally:
+            driver.quit()
+        return html
+
+    def _try_url_patterns(self, date):
+        """
+        Try different URL patterns to find available data using Selenium.
+        Args:
+            date (str): Date to search for
+        Returns:
+            tuple: (success, data) where success is bool and data is DataFrame or None
+        """
+        for base_url in self.base_urls:
+            url_patterns = [
+                f"{base_url}?date={date}",
+                f"{base_url}{date}",
+                f"{base_url}{date}/",
+            ]
+            for url in url_patterns:
+                try:
+                    print(f"🔗 Trying URL (Selenium): {url}")
+                    html = self._get_rendered_html(url)
+                    try:
+                        dfs = pd.read_html(StringIO(html))
+                        if dfs:
+                            df = dfs[0]
+                            if df.shape[1] > 1 and not str(df.iloc[0, 0]).lower().startswith('bet'):
+                                print(f"✅ Found data at {url}")
+                                return True, df
+                            else:
+                                print(f"⚠️  Found table but appears to be promo content")
+                        else:
+                            print(f"⚠️  No tables found at {url}")
+                    except Exception as e:
+                        print(f"⚠️  Error parsing tables: {e}")
+                except Exception as e:
+                    print(f"❌ Error accessing {url} with Selenium: {e}")
+        return False, None
+
+    def _reformat_data(self, df, date):
+        """
+        Reformat raw HTML table data into structured format.
+        
+        Args:
+            df (pandas.DataFrame): Raw data from HTML table
+            date (str): Date being processed
+            
+        Returns:
+            pandas.DataFrame: Cleaned and structured data
+        """
+        new_df = self.schema.copy()
+        
+        # Process each row (each row represents one game)
+        for _, row in df.iterrows():
+            try:
+                # Extract basic game info
+                time = row.iloc[0] if len(row) > 0 else ""  # Time column
+                rotation = row.iloc[1] if len(row) > 1 else ""  # Rotation column
+                teams_text = row.iloc[2] if len(row) > 2 else ""  # Teams column
+                wagers = row.iloc[3] if len(row) > 3 else ""  # WAGERS % column
+                opener = row.iloc[4] if len(row) > 4 else ""  # OPENER column
+                
+                # Parse teams and scores
+                team1_name, team1_score, team2_name, team2_score = self._parse_teams_and_scores(teams_text)
+                
+                # Parse opener
+                ou_indicator, opener_total, opener_odds = self._parse_opener(opener)
+                
+                # Parse sportsbook odds (columns 5-10)
+                sportsbooks = []
+                for i in range(5, min(11, len(row))):
+                    total, odds = self._parse_sportsbook_odds(row.iloc[i] if i < len(row) else "")
+                    sportsbooks.append((total, odds))
+                
+                # Ensure we have enough sportsbook data
+                while len(sportsbooks) < 6:
+                    sportsbooks.append((0, ""))
+                
+                # Create two rows - one for each team
+                for team_idx in range(2):
+                    if team_idx == 0:
+                        team_name = team1_name
+                        team_score = team1_score
+                        opponent_name = team2_name
+                        opponent_score = team2_score
+                    else:
+                        team_name = team2_name
+                        team_score = team2_score
+                        opponent_name = team1_name
+                        opponent_score = team1_score
+                    
+                    # Add data to schema
+                    new_df["date"].append(date)
+                    new_df["time"].append(time)
+                    new_df["rotation"].append(rotation)
+                    new_df["team"].append(self._translate(team_name))
+                    new_df["opponent"].append(self._translate(opponent_name))
+                    new_df["team_score"].append(team_score)
+                    new_df["opponent_score"].append(opponent_score)
+                    new_df["wagers_percent"].append(wagers)
+                    new_df["opener_ou"].append(ou_indicator)
+                    new_df["opener_total"].append(opener_total)
+                    new_df["opener_odds"].append(opener_odds)
+                    
+                    # Add sportsbook data
+                    new_df["betmgm_total"].append(sportsbooks[0][0])
+                    new_df["betmgm_odds"].append(sportsbooks[0][1])
+                    new_df["fanduel_total"].append(sportsbooks[1][0])
+                    new_df["fanduel_odds"].append(sportsbooks[1][1])
+                    new_df["caesars_total"].append(sportsbooks[2][0])
+                    new_df["caesars_odds"].append(sportsbooks[2][1])
+                    new_df["bet365_total"].append(sportsbooks[3][0])
+                    new_df["bet365_odds"].append(sportsbooks[3][1])
+                    new_df["draftkings_total"].append(sportsbooks[4][0])
+                    new_df["draftkings_odds"].append(sportsbooks[4][1])
+                    new_df["betrivers_total"].append(sportsbooks[5][0])
+                    new_df["betrivers_odds"].append(sportsbooks[5][1])
+                    
+            except Exception as e:
+                print(f"Error processing row: {e}")
+                continue
+        
+        return pd.DataFrame(new_df)
+
+    def driver(self):
+        """
+        Main driver method for scraping 2nd half data across multiple dates.
+        
+        Returns:
+            pandas.DataFrame: Processed 2nd half data
+        """
+        all_data = []
+        successful_dates = 0
+        
+        print(f"🎯 Starting 2nd half totals scraping for {len(self.dates)} dates")
+        print("⚠️  Note: 2nd half totals data availability varies by date")
+        
+        for date in self.dates:
+            print(f"\n📅 Processing date: {date}")
+            
+            # Try to find data using different URL patterns
+            success, df = self._try_url_patterns(date)
+            
+            if success and df is not None:
+                try:
+                    # Process the data
+                    processed_df = self._reformat_data(df, date)
+                    if not processed_df.empty:
+                        all_data.append(processed_df)
+                        successful_dates += 1
+                        print(f"✅ Successfully processed {len(processed_df)} team records for {date}")
+                    else:
+                        print(f"⚠️  No valid data extracted for {date}")
+                except Exception as e:
+                    print(f"❌ Error processing data for {date}: {e}")
+            else:
+                print(f"❌ No data available for {date}")
+        
+        if all_data:
+            final_df = pd.concat(all_data, ignore_index=True)
+            print(f"\n🎉 Scraping completed!")
+            print(f"📊 Successfully processed {successful_dates}/{len(self.dates)} dates")
+            print(f"📊 Total team records: {len(final_df)}")
+            return final_df
+        else:
+            print(f"\n❌ No data collected from any dates")
+            print(f"💡 This may be due to:")
+            print(f"   - No 2nd half totals available for the specified dates")
+            print(f"   - Website structure changes")
+            print(f"   - Data requires JavaScript rendering")
+            return pd.DataFrame()

@@ -5,7 +5,7 @@ This module contains global configuration settings for the sportsbook scraper.
 These settings define the valid year range for data scraping and can be
 modified to adjust the application's behavior.
 
-Author: Finn Lancaster
+Author: Finn Lancaster, Rod Beckett (NCAA add-on)
 License: MIT
 """
 
